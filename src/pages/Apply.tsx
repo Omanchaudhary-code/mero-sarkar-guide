@@ -15,9 +15,13 @@ import {
   FileText, 
   CheckCircle2,
   Loader2,
-  Camera
+  Camera,
+  AlertCircle,
+  Info
 } from "lucide-react";
-import Tesseract from "tesseract.js";
+
+// API Configuration
+const API_BASE_URL = "http://localhost:8000";
 
 const serviceData: Record<string, any> = {
   "voter-id": {
@@ -75,6 +79,13 @@ const serviceData: Record<string, any> = {
   },
 };
 
+interface OCRResponse {
+  text: string;
+  extracted_fields: Record<string, string>;
+  language?: string;
+  confidence?: number;
+}
+
 export default function Apply() {
   const { serviceId } = useParams();
   const { toast } = useToast();
@@ -85,6 +96,9 @@ export default function Apply() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingProgress, setProcessingProgress] = useState(0);
   const [ocrComplete, setOcrComplete] = useState(false);
+  const [extractedText, setExtractedText] = useState<string>("");
+  const [ocrConfidence, setOcrConfidence] = useState<number>(0);
+  const [extractedFieldsCount, setExtractedFieldsCount] = useState<number>(0);
 
   if (!service) {
     return (
@@ -103,69 +117,91 @@ export default function Apply() {
   const handleFileUpload = async (docType: string, file: File) => {
     setUploadedDocs(prev => ({ ...prev, [docType]: file }));
     
-    if (docType === "Citizenship Certificate" || docType === "Birth Certificate") {
+    // Only process OCR for citizenship/birth certificates
+    if (docType === "Citizenship Certificate" || docType === "Birth Certificate" || docType === "Parents' Citizenship") {
       setIsProcessing(true);
-      setProcessingProgress(0);
+      setProcessingProgress(10);
       
       try {
-        const result = await Tesseract.recognize(
-          file,
-          'eng+nep',
-          {
-            logger: m => {
-              if (m.status === 'recognizing text') {
-                setProcessingProgress(Math.round(m.progress * 100));
-              }
-            }
-          }
-        );
+        // Create FormData for file upload
+        const formDataToSend = new FormData();
+        formDataToSend.append('file', file);
 
-        const text = result.data.text;
-        const extractedData = extractDataFromOCR(text);
-        
-        setFormData(prev => ({ ...prev, ...extractedData }));
-        setOcrComplete(true);
+        setProcessingProgress(30);
         
         toast({
-          title: "Document Scanned Successfully",
-          description: "Form has been auto-filled with extracted data. Please review and edit if needed.",
+          title: "Processing Document",
+          description: "Extracting text from citizenship certificate...",
         });
+
+        // Call backend OCR endpoint
+        const response = await fetch(`${API_BASE_URL}/api/ocr/upload`, {
+          method: 'POST',
+          body: formDataToSend,
+        });
+
+        setProcessingProgress(60);
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail || 'OCR processing failed');
+        }
+
+        const ocrData: OCRResponse = await response.json();
+
+        setProcessingProgress(80);
+
+        if (!ocrData.text || ocrData.text.trim() === "") {
+          throw new Error("No text detected in the document. Please ensure the image is clear and readable.");
+        }
+
+        setExtractedText(ocrData.text);
+        setOcrConfidence(ocrData.confidence || 0);
+
+        // Use backend-extracted structured fields directly
+        if (ocrData.extracted_fields && Object.keys(ocrData.extracted_fields).length > 0) {
+          setFormData(prev => ({ ...prev, ...ocrData.extracted_fields }));
+          setExtractedFieldsCount(Object.keys(ocrData.extracted_fields).length);
+          
+          // Log extracted fields for debugging
+          console.log("Backend extracted fields:", ocrData.extracted_fields);
+          
+          setOcrComplete(true);
+          setProcessingProgress(100);
+          
+          toast({
+            title: "✅ Document Scanned Successfully!",
+            description: `Auto-filled ${Object.keys(ocrData.extracted_fields).length} fields with ${ocrData.confidence?.toFixed(1)}% confidence. Please review the data.`,
+          });
+        } else {
+          // Even if no structured fields, show the raw text
+          setOcrComplete(true);
+          setProcessingProgress(100);
+          
+          toast({
+            title: "Document Scanned",
+            description: "Text extracted but couldn't identify specific fields. Please fill the form manually.",
+            variant: "destructive",
+          });
+        }
+
       } catch (error) {
         console.error('OCR Error:', error);
         toast({
-          title: "Error Processing Document",
-          description: "Could not extract text from document. Please fill the form manually.",
+          title: "❌ Error Processing Document",
+          description: error instanceof Error ? error.message : "Could not extract text from document. Please try again or fill manually.",
           variant: "destructive",
         });
       } finally {
         setIsProcessing(false);
-        setProcessingProgress(0);
+        setTimeout(() => setProcessingProgress(0), 1000);
       }
+    } else {
+      toast({
+        title: "Document Uploaded",
+        description: `${docType} uploaded successfully.`,
+      });
     }
-  };
-
-  const extractDataFromOCR = (text: string): Record<string, string> => {
-    const extracted: Record<string, string> = {};
-    
-    // Common patterns for Nepali documents
-    const patterns = {
-      fullName: /(?:name|नाम)[:\s]+([A-Za-z\s]+)/i,
-      citizenship: /(?:citizenship|नागरिकता)[:\s]*(?:no|नं)[:\s]*(\d+[-\s]*\d*)/i,
-      dateOfBirth: /(?:date of birth|जन्म मिति)[:\s]*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/i,
-      fatherName: /(?:father|बाबु)[:\s]*(?:name|नाम)?[:\s]*([A-Za-z\s]+)/i,
-      motherName: /(?:mother|आमा)[:\s]*(?:name|नाम)?[:\s]*([A-Za-z\s]+)/i,
-      district: /(?:district|जिल्ला)[:\s]*([A-Za-z\s]+)/i,
-      phone: /(?:phone|mobile|फोन)[:\s]*(\d{10})/i,
-    };
-
-    for (const [key, pattern] of Object.entries(patterns)) {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        extracted[key] = match[1].trim();
-      }
-    }
-
-    return extracted;
   };
 
   const handleInputChange = (name: string, value: string) => {
@@ -179,6 +215,14 @@ export default function Apply() {
       title: "Application Submitted",
       description: "Your application has been submitted successfully. You will receive a confirmation shortly.",
     });
+
+    // Log submitted data for debugging
+    console.log("Submitted Form Data:", formData);
+    console.log("Uploaded Documents:", Object.keys(uploadedDocs));
+  };
+
+  const getFieldHighlight = (fieldName: string) => {
+    return formData[fieldName] && ocrComplete ? "border-green-500 bg-green-50" : "";
   };
 
   return (
@@ -200,54 +244,95 @@ export default function Apply() {
 
         <div className="grid gap-8 lg:grid-cols-3">
           <div className="lg:col-span-2">
-            {!ocrComplete && (
-              <Card className="mb-8 border-primary/20">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Upload className="h-5 w-5 text-primary" />
-                    Upload Required Documents
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {service.documents.map((doc: string, idx: number) => (
-                    <div key={idx} className="space-y-2">
-                      <Label htmlFor={`doc-${idx}`} className="flex items-center gap-2">
-                        <FileText className="h-4 w-4" />
-                        {doc}
-                        {idx === 0 && <span className="text-xs text-primary">(Will auto-fill form)</span>}
-                      </Label>
-                      <Input
-                        id={`doc-${idx}`}
-                        type="file"
-                        accept="image/*"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) handleFileUpload(doc, file);
-                        }}
-                        className="cursor-pointer"
-                      />
-                      {uploadedDocs[doc] && (
-                        <p className="flex items-center gap-2 text-sm text-green-600">
-                          <CheckCircle2 className="h-4 w-4" />
-                          {uploadedDocs[doc].name}
-                        </p>
+            <Card className="mb-8 border-primary/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Upload className="h-5 w-5 text-primary" />
+                  Upload Required Documents
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {service.documents.map((doc: string, idx: number) => (
+                  <div key={idx} className="space-y-2">
+                    <Label htmlFor={`doc-${idx}`} className="flex items-center gap-2">
+                      <FileText className="h-4 w-4" />
+                      {doc}
+                      {(doc.includes("Citizenship") || doc.includes("Birth")) && (
+                        <span className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                          🤖 Smart OCR - Auto-fills form
+                        </span>
                       )}
-                    </div>
-                  ))}
+                    </Label>
+                    <Input
+                      id={`doc-${idx}`}
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleFileUpload(doc, file);
+                      }}
+                      className="cursor-pointer"
+                      disabled={isProcessing}
+                    />
+                    {uploadedDocs[doc] && (
+                      <p className="flex items-center gap-2 text-sm text-green-600">
+                        <CheckCircle2 className="h-4 w-4" />
+                        {uploadedDocs[doc].name}
+                      </p>
+                    )}
+                  </div>
+                ))}
 
-                  {isProcessing && (
-                    <div className="space-y-2 rounded-lg border border-primary/20 bg-primary/5 p-4">
-                      <div className="flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                        <p className="text-sm font-medium">Processing document with OCR...</p>
+                {isProcessing && (
+                  <div className="space-y-3 rounded-lg border border-primary/20 bg-primary/5 p-4">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                      <div>
+                        <p className="text-sm font-medium">Processing with AI-powered OCR...</p>
+                        <p className="text-xs text-muted-foreground">
+                          Extracting citizenship details from the document
+                        </p>
                       </div>
-                      <Progress value={processingProgress} className="h-2" />
-                      <p className="text-xs text-muted-foreground">{processingProgress}% complete</p>
                     </div>
-                  )}
-                </CardContent>
-              </Card>
-            )}
+                    <Progress value={processingProgress} className="h-2" />
+                    <p className="text-xs text-muted-foreground">
+                      {processingProgress < 30 && "Uploading document..."}
+                      {processingProgress >= 30 && processingProgress < 60 && "Preprocessing image..."}
+                      {processingProgress >= 60 && processingProgress < 80 && "Extracting text..."}
+                      {processingProgress >= 80 && "Parsing data fields..."}
+                    </p>
+                  </div>
+                )}
+
+                {ocrComplete && extractedText && (
+                  <Alert className="border-green-200 bg-green-50">
+                    <CheckCircle2 className="h-4 w-4 text-green-600" />
+                    <AlertDescription>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <strong className="text-green-900">✅ OCR Processing Complete!</strong>
+                          <span className="text-xs text-green-700">
+                            {ocrConfidence.toFixed(1)}% confidence
+                          </span>
+                        </div>
+                        <p className="text-sm text-green-800">
+                          Successfully extracted <strong>{extractedFieldsCount} fields</strong> from the citizenship certificate.
+                          Green-highlighted fields below were auto-filled.
+                        </p>
+                        <details className="mt-2">
+                          <summary className="cursor-pointer text-xs text-green-700 hover:text-green-900">
+                            📄 View raw extracted text ({extractedText.length} characters)
+                          </summary>
+                          <pre className="mt-2 max-h-40 overflow-auto rounded border border-green-200 bg-white p-2 text-xs text-gray-700">
+                            {extractedText}
+                          </pre>
+                        </details>
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </CardContent>
+            </Card>
 
             <Card className="border-2 border-primary/30 bg-gradient-to-b from-background to-primary/5">
               <CardHeader className="border-b-2 border-primary/20 bg-primary/10">
@@ -257,6 +342,11 @@ export default function Apply() {
                     <h2 className="text-xl font-bold">नेपाल सरकार / Government of Nepal</h2>
                   </div>
                   <p className="text-sm font-medium">{service.title}</p>
+                  {ocrComplete && (
+                    <p className="mt-1 text-xs text-green-600">
+                      ✨ {extractedFieldsCount} fields auto-filled from document
+                    </p>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="pt-6">
@@ -267,6 +357,9 @@ export default function Apply() {
                         <Label htmlFor={field.name} className="font-medium">
                           {field.label}
                           {field.required && <span className="text-destructive">*</span>}
+                          {formData[field.name] && ocrComplete && (
+                            <span className="ml-2 text-xs text-green-600">✓ Auto-filled</span>
+                          )}
                         </Label>
                         {field.type === 'textarea' ? (
                           <Textarea
@@ -274,7 +367,7 @@ export default function Apply() {
                             value={formData[field.name] || ""}
                             onChange={(e) => handleInputChange(field.name, e.target.value)}
                             required={field.required}
-                            className="mt-2 border-primary/30 bg-background/50"
+                            className={`mt-2 border-primary/30 bg-background/50 transition-all ${getFieldHighlight(field.name)}`}
                           />
                         ) : (
                           <Input
@@ -283,12 +376,21 @@ export default function Apply() {
                             value={formData[field.name] || ""}
                             onChange={(e) => handleInputChange(field.name, e.target.value)}
                             required={field.required}
-                            className="mt-2 border-primary/30 bg-background/50"
+                            className={`mt-2 border-primary/30 bg-background/50 transition-all ${getFieldHighlight(field.name)}`}
                           />
                         )}
                       </div>
                     ))}
                   </div>
+
+                  {ocrComplete && (
+                    <Alert>
+                      <Info className="h-4 w-4" />
+                      <AlertDescription className="text-sm">
+                        Please review all auto-filled fields carefully. Edit any incorrect information before submitting.
+                      </AlertDescription>
+                    </Alert>
+                  )}
 
                   <div className="rounded-lg border-2 border-dashed border-primary/30 bg-primary/5 p-4">
                     <Label className="mb-2 block font-medium">Applicant's Declaration (आवेदकको घोषणा)</Label>
@@ -331,7 +433,15 @@ export default function Apply() {
             <Alert>
               <Camera className="h-4 w-4" />
               <AlertDescription>
-                <strong>Smart OCR:</strong> Upload your citizenship certificate or birth certificate, and we'll automatically extract and fill the form details for you.
+                <strong>🤖 AI-Powered OCR:</strong> Upload your citizenship certificate and our backend AI will automatically detect and extract all details including:
+                <ul className="ml-4 mt-2 list-disc text-xs">
+                  <li>Full Name</li>
+                  <li>Citizenship Number</li>
+                  <li>Date of Birth</li>
+                  <li>District & Municipality</li>
+                  <li>Ward Number</li>
+                  <li>And more...</li>
+                </ul>
               </AlertDescription>
             </Alert>
 
@@ -359,12 +469,40 @@ export default function Apply() {
               </CardHeader>
               <CardContent className="space-y-2 text-sm text-muted-foreground">
                 <p>• All fields marked with * are mandatory</p>
-                <p>• Ensure all documents are clear and readable</p>
-                <p>• OCR works best with high-quality scans</p>
-                <p>• Review auto-filled data before submission</p>
-                <p>• Keep digital copies of all documents</p>
+                <p>• Ensure documents are clear and well-lit</p>
+                <p>• Backend OCR uses Tesseract AI</p>
+                <p>• Supports English + Nepali text</p>
+                <p>• Review auto-filled data carefully</p>
+                <p>• Accepted: PNG, JPG, JPEG, TIFF</p>
               </CardContent>
             </Card>
+
+            {ocrComplete && (
+              <Card className="border-green-200 bg-green-50">
+                <CardHeader>
+                  <CardTitle className="text-base text-green-900">OCR Results</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-green-700">Confidence:</span>
+                    <strong className="text-green-900">{ocrConfidence.toFixed(1)}%</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-green-700">Fields Extracted:</span>
+                    <strong className="text-green-900">{extractedFieldsCount}</strong>
+                  </div>
+                  <div className="mt-3 rounded bg-white p-2 text-xs">
+                    {ocrConfidence > 85 ? (
+                      <p className="text-green-700">✅ High accuracy - Data should be reliable</p>
+                    ) : ocrConfidence > 70 ? (
+                      <p className="text-yellow-700">⚠️ Good accuracy - Please verify data</p>
+                    ) : (
+                      <p className="text-orange-700">⚠️ Lower accuracy - Review all fields carefully</p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       </div>
