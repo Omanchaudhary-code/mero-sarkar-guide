@@ -1,4 +1,7 @@
+Backend repo url = https://github.com/Omanchaudhary-code/E-GovBackend.git
+
 Mero Sarkar Guide AKA Sewa Sathi
+
 Mero Sarkar Guide is a digital platform designed to help Nepali citizens understand and complete government office procedures efficiently. The system provides step-by-step guidance, AI-based support, and automated form filling using OCR technology.
 Key Features
 Government Service Guidance: Clear, structured information about procedures such as voter ID registration, citizenship, and passport application.
