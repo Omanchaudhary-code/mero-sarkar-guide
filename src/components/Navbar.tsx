@@ -20,9 +20,9 @@ export const Navbar = () => {
       <div className="container mx-auto flex h-16 items-center justify-between px-4">
         <Link to="/" className="flex items-center gap-2">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-hero">
-            <span className="text-xl font-bold text-primary-foreground">नस</span>
+            <span className="text-xl font-bold text-primary-foreground">SS</span>
           </div>
-          <span className="text-xl font-bold">Nagarik Sahayak</span>
+          <span className="text-xl font-bold">Sewa Sathi</span>
         </Link>
 
         {/* Desktop Navigation */}
